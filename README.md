@@ -14,6 +14,67 @@
 
 本 Skill 只建立一个清晰的目录边界和控制面，不负责调度业务任务。
 
+## 安装到 Pi
+
+### Linux / FNOS / NAS
+
+在实际运行 Pi 的用户环境中执行：
+
+```sh
+mkdir -p ~/.pi/agent/skills
+
+git clone https://github.com/0verme/project-workspace-init.git \
+  ~/.pi/agent/skills/project-workspace-init
+
+chmod +x ~/.pi/agent/skills/project-workspace-init/scripts/init-workspace.sh
+```
+
+安装完成后重新启动 Pi 会话，然后在 Pi 中使用：
+
+```text
+/skill:project-workspace-init
+```
+
+### 已安装后的更新
+
+```sh
+cd ~/.pi/agent/skills/project-workspace-init
+git pull --ff-only
+```
+
+### Pi 用户与 `HOME`
+
+Skill 必须安装到**实际运行 Pi 的用户**对应的目录：
+
+```text
+~/.pi/agent/skills/
+```
+
+如果 Pi 通过 Pi Web、systemd、Docker 或其他用户运行，SSH 登录用户的 `HOME` 可能不是 Pi 实际读取的 `HOME`。应在对应的运行环境中先检查：
+
+```sh
+whoami
+echo "$HOME"
+```
+
+### 安装与执行的区别
+
+安装 Skill 本身不会初始化 Workspace。真正调用 Skill 时，仍必须显式提供以下两个参数；Skill 不允许自动猜测它们：
+
+```text
+Repository: <GitHub URL or owner/repo>
+Workspace Root: <explicit absolute path>
+```
+
+例如在 NAS 上：
+
+```text
+/skill:project-workspace-init
+
+Repository: 0verme/data-warehouse-visualized
+Workspace Root: /vol5/1000/ai-workspace
+```
+
 ## 目录模型
 
 初始化目标如下：
