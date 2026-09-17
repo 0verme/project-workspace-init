@@ -5,12 +5,13 @@
 ## Project
 
 - Repository: `<owner>/<repo>`
-- Workspace Root: `<absolute-path>`
+- Bootstrap Root: `<absolute-path>`
+- Workspace Root: `<repo>_base`
 - Base Workspace: `<repo>_base`
 
 ## Current Main
 
-- Path: `<Workspace Root>/<repo>`
+- Path: `<Bootstrap Root>/<repo>`
 - Branch: `<remote-default-branch>`
 - Origin: `<Repository>`
 - Working Tree: `CLEAN`
@@ -18,8 +19,8 @@
 ## Active Tasks
 
 | Issue / Task | Branch | Worktree | State | Conflict Risk | PR | Notes |
-|---|---|---|---|---|---|---|
-| _none_ | — | — | — | — | — | — |
+| ------------ | ------ | -------- | ----- | ------------- | -- | ----- |
+| _none_       | —      | —        | —     | —             | —  | —     |
 
 ## Merge Queue
 
@@ -49,4 +50,4 @@
 
 ## Next Actions
 
-- Confirm the next explicitly requested task and its Worktree.
+- Confirm the next task; Worktree path will default to `<Workspace Root>/worktrees/<worktree-name>`.
