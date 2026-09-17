@@ -4,6 +4,9 @@
 
 set -eu
 
+# This command is bootstrap-only. The Skill must not invoke it for daily
+# Worktree operations after an initialized base has been discovered.
+
 stop_needs_input() {
     reason=${1-}
     shift || true
