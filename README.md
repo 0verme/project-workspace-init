@@ -1,5 +1,7 @@
 # project-workspace-init
 
+当前 Skill 版本：`1.1.2`
+
 一个可复用、跨平台且非破坏性的 Skill，用于：
 
 - 首次 bootstrap Git Main Workspace 与 Agent Control Plane；
@@ -46,6 +48,33 @@ worktrees/
 - 只有 Repository 确实无法识别、名称无法生成或存在真实冲突时才询问。
 
 这里的两个名称含义需要区分：bootstrap 命令的 `Workspace Root` 是 `<repo>/` 与 `<repo>_base/` 的共同父目录；初始化成功后，日常规则中的 `Workspace Root` 是已经发现的 `<repo>_base/`。
+
+### Resolved Workspace Context（一次解析并锁定）
+
+发现完整 initialized base 后，立即建立本次任务的 `Resolved Workspace Context`：
+
+```text
+Repository
+Main Workspace
+Control Plane Root
+Worktree Root
+Default Branch
+Current Task
+Target Branch
+Canonical Worktree Path
+Existing Worktree Path (if any)
+```
+
+根目录必须一次锁定：
+
+```text
+CONTROL_PLANE_ROOT = detected initialized base
+WORKTREE_ROOT     = CONTROL_PLANE_ROOT/worktrees
+```
+
+`Control Plane Root` 是已确认包含普通文件 `AGENTS.md`、普通文件 `STATUS.md` 和目录 `worktrees/` 的 initialized base。验证成功后，后续不得根据 repo 名、当前路径、parent、remote 或 `_base` 再次计算 Workspace Root；如果信息冲突，返回 `NEEDS_ATTENTION`，不得静默切换。
+
+例如已识别 `/vol5/1000/ai-workspace/dbx-plugin-SchemaSeed_base` 后，必须继续使用该目录及其 `worktrees/`，不得产生 `dbx-plugin-SchemaSeed_base_base`，也不得回到共同父目录重新推导 `_base`。
 
 Bootstrap 有两条明确路径：
 
@@ -201,10 +230,26 @@ Remote main: not created yet
 
 ## 日常 Worktree 自动生成规则
 
-用户要求开 Worktree、处理 Issue、开分支或开始任务时，默认使用：
+用户要求开 Worktree、处理 Issue、开分支或开始任务时，按以下固定顺序执行：
+
+1. Detect initialized base；
+2. 锁定 `CONTROL_PLANE_ROOT` 和 `WORKTREE_ROOT`；
+3. 解析并校验 Repository；
+4. 解析并校验 Main Workspace；
+5. 解析目标 branch；
+6. 用锁定的 `WORKTREE_ROOT` 生成 canonical Worktree path；
+7. 读取 `git worktree list --porcelain`；
+8. 先按 branch 的真实 Git 绑定匹配；
+9. 再按 canonical path 匹配；
+10. 分类为 `REUSED`、`STALE_WORKTREE_METADATA`、`SAFE_TEMP_RESIDUE` 或 `REAL_CONFLICT`；
+11. 分类完成后才决定复用、prune、新建或停止。
+
+branch 的真实绑定优先于重新计算出的漂亮路径。canonical path 约束新建 Worktree，不约束已有健康 Worktree 的实际路径。
+
+新建 Worktree 默认使用：
 
 ```text
-<Workspace Root>/worktrees/<worktree-name>
+<CONTROL_PLANE_ROOT>/worktrees/<worktree-name>
 ```
 
 ### branch 生成优先级
@@ -236,21 +281,35 @@ worktree: <Workspace Root>/worktrees/issue-65
 ```text
 branch:   feat/issue-65-data-delivery
 worktree: <Workspace Root>/worktrees/issue-65-data-delivery
+
+branch:   feat/issue-4-host-api-contract
+canonical: <CONTROL_PLANE_ROOT>/worktrees/issue-4-host-api-contract
 ```
 
 不生成 `worktrees/feat/issue-65-data-delivery`，也不因为缺少绝对路径而返回 `NEEDS_INPUT`。
 
-### 创建前冲突检查
+### 创建前判定与安全恢复
 
-创建 branch / Worktree 前必须检查：
+创建前必须读取 `git worktree list --porcelain`，并始终先匹配 branch、再匹配 path。`git worktree list --porcelain` 失败时返回 `NEEDS_ATTENTION`，不得猜测或 prune。
 
-- branch 是否已存在（本地、远端跟踪 ref 或已有 Worktree）；
-- `git worktree list --porcelain` 中是否已有该 branch 或目标路径；
-- 目标目录是否已经存在；
-- 同一个 Issue 是否已有活跃 Worktree；
-- Main 与现有 Worktree 是否可安全操作。
+| 分类 | 判定 | 自动动作 |
+| --- | --- | --- |
+| `REUSED` | canonical Worktree 完全匹配，或目标 branch 已绑定另一个健康 Worktree | 复用真实路径，不重新创建、不 STOP |
+| `STALE_WORKTREE_METADATA` | metadata 有记录，但物理目录已明确不存在、没有 lock，且已排除权限/挂载异常 | 在正确 Main Workspace 执行 `git worktree prune`，复查后按 canonical path 创建 |
+| `SAFE_TEMP_RESIDUE` | 目标目录不是 Worktree / Repository，目录为空，并已证明由本轮操作创建 | 只清理该空目录后重试 |
+| `REAL_CONFLICT` | 真实 Worktree、Repository、未知用户数据或任务身份冲突 | 不删除、不移动、不覆盖；按情况 `NEEDS_INPUT` 或 `NEEDS_ATTENTION` |
 
-可以复用完全匹配的现有任务。branch 已被其他 Worktree 使用时优先复用已有 Worktree；branch 存在但没有 Worktree 时，可在验证后复用，不要再次用 `-b` 创建同名 branch。真实冲突必须报告并请求用户决定，禁止自动生成 `issue-65-2`、`issue-65-new`、`issue-65-final` 或 `issue-65-copy` 等垃圾名称。
+具体规则：
+
+- **canonical 已存在且完全匹配**：branch、path、Git metadata 正常时 `State: REUSED`，直接复用，不重新创建。
+- **branch 已绑定非 canonical 健康 Worktree**：物理目录存在、Git 状态正常、branch 正确且无身份冲突时 `State: REUSED`。不得因为旧路径不符合最新命名规范而 STOP、移动或重命名。
+- **stale metadata**：必须先确认物理目录确实不存在，并排除权限不足、网络挂载异常和 locked 状态；不能证明 stale 时返回 `NEEDS_ATTENTION`，不得 prune。
+- **本轮空临时残留**：必须同时证明目录为空、不是 Git Worktree / Repository、且由本轮当前操作创建；只允许删除该空目录本身，不得使用 `rm -rf`。
+- **未知非空目录**：返回 `NEEDS_INPUT`，不得删除、`git clean` 或自动改成 `-2`、`-new`、`-final`。
+- **dirty healthy Worktree**：即使有 staged changes、unstaged changes 或 untracked user files，仍然 `REUSED` 并报告 `DIRTY`；不得 prune、删除、移动、覆盖、reset、clean 或重建。若身份冲突或必须迁移/删除才能继续，才返回 `NEEDS_INPUT`。
+- **locked / inaccessible Worktree**：无法证明 stale 时返回 `NEEDS_ATTENTION`，不得 prune / delete。
+
+因此，旧版本路径（例如 `worktrees/issue-4`）只要 branch、metadata 和任务身份正确，就必须 `REUSE existing healthy worktree`。
 
 ## 哪些情况仍会 NEEDS_INPUT
 
@@ -267,10 +326,10 @@ worktree: <Workspace Root>/worktrees/issue-65-data-delivery
 - 多个 base 无法可靠区分；
 - Repository 没有可靠来源或来源互相冲突；
 - 没有 Worktree 名称、branch、Issue 编号或任务描述，无法稳定生成名称；
-- branch、目标目录或同一 Issue 存在真实冲突，需要用户选择复用 / 改名 / 关闭旧任务 / 拆分任务；
-- 用户明确提供了越过 Workspace Root 的路径。
+- `REAL_CONFLICT` 中存在真实用户数据、Repository 或任务身份冲突，需要用户选择复用 / 改名 / 关闭旧任务 / 拆分任务；
+- 用户明确提供了越过已锁定 `CONTROL_PLANE_ROOT` 的路径。
 
-以下情况不是日常 `NEEDS_INPUT`：没有提供 Workspace Root、没有提供 Worktree 绝对路径、没有提供 branch 但有 Issue / 任务描述。权限不足、Dirty Main、remote 不一致、Git 不可用或目录类型错误应报告 `NEEDS_ATTENTION`。
+健康旧 Worktree、branch 已绑定的非 canonical 路径、已确认的 stale metadata，以及本轮创建且已证明为空的安全临时残留，都不是 `NEEDS_INPUT` 的理由。以下情况不是日常 `NEEDS_INPUT`：没有提供 Workspace Root、没有提供 Worktree 绝对路径、没有提供 branch 但有 Issue / 任务描述。权限不足、Dirty Main、remote 不一致、Git 不可用、`git worktree list --porcelain` 失败、locked / inaccessible Worktree 或无法证明目录确实不存在时应报告 `NEEDS_ATTENTION`。
 
 ## 使用 bootstrap 脚本
 
@@ -300,7 +359,13 @@ worktree: <Workspace Root>/worktrees/issue-65-data-delivery
 - Dirty Main 只报告 `STATUS: NEEDS_ATTENTION`，不会 reset、stash、clean、覆盖 checkout 或自动提交；
 - 不假定默认分支叫 `main`；已有 Main 不在 remote default branch 时不自动切换；
 - Main Repository 与 linked Worktree 必须在同一运行环境和同一文件系统侧；Windows 与 FNOS 如需维护同一 GitHub 项目，应各自 clone，通过 Git remote 同步；
-- 不自动删除或移动已有 branch / Worktree，不 force push，不自动 merge。
+- 禁止删除、移动或覆盖仍真实存在且可能承载用户工作的健康 Worktree；
+- 以下属于允许的安全恢复，不视为破坏性 Worktree 操作：
+  1. 复用已绑定目标 branch 的健康 Worktree；
+  2. 对物理目录已确认不存在的 stale worktree metadata 执行 `git worktree prune`；
+  3. 清理由本轮当前操作创建、已确认为空、且不属于 Git Worktree / Git Repository 的临时目录；
+  4. 健康旧 Worktree 路径不符合最新命名规范时继续复用，不为了路径规范化迁移或阻断任务。
+- 除上述可证明安全的恢复外，不自动执行 reset、clean、删除 branch、force push、自动 stash、自动 commit 或自动 merge。
 
 ## Source Code and Generated Artifacts
 
@@ -336,7 +401,7 @@ bootstrap 在 Main Workspace 可验证后，会检查共同父目录下的历史
 LEGACY WORKTREES DETECTED
 ```
 
-不会移动、删除、repair 或自动 prune 有效 Worktree。日常操作只使用发现的 base 下的 `worktrees/`。
+不会移动、删除或覆盖真实存在的健康 Worktree，也不会为了路径规范化迁移它。bootstrap 只报告历史目录；日常操作对已确认物理目录不存在的 stale metadata 按上面的恢复矩阵执行 `git worktree prune`，不把有效 Worktree 当成 legacy 残留。
 
 ## Linux / FNOS 权限
 
@@ -344,7 +409,7 @@ Shell 脚本会检查 Root 是否存在、是否为目录以及当前用户是�
 
 ## 当前不负责的内容
 
-本 Skill 不实现自动 Merge PR、Merge Train、Merge Coordinator、跨机器 linked-worktree metadata 同步、Web UI 或数据库；也不会在没有用户授权时自动删除冲突对象或合并分支。
+本 Skill 不实现自动 Merge PR、Merge Train、Merge Coordinator、跨机器 linked-worktree metadata 同步、Web UI 或数据库；也不会在没有证明安全时自动删除冲突对象或合并分支。只对本轮创建且确认为空的临时目录执行安全清理。
 
 ## 验证重点
 
@@ -352,6 +417,7 @@ POSIX bootstrap 的可重复场景测试可运行：
 
 ```sh
 sh tests/test-init-workspace.sh
+sh tests/test-worktree-rules.sh
 ```
 
 测试使用 fake Git 远程探测，不会创建 GitHub commit 或 push，覆盖空远程、远程不存在、main / 非 main default branch、已有非 Git 目录、origin 冲突、幂等重跑以及缺少输入。
@@ -364,8 +430,12 @@ sh tests/test-init-workspace.sh
 - 已有 `AGENTS.md`、`STATUS.md`、`worktrees/` 时自动识别 base，不再次索要 Workspace Root；
 - `处理 #65` 自动生成 branch 与 Worktree；
 - 从 `feat/issue-65-data-delivery` 生成 `issue-65-data-delivery` 而非嵌套 `feat/` 目录；
-- 已有 branch、目标目录或同 Issue Worktree 时报告冲突，不创建 `-2` / `-new` / `-copy`；
-- 模板保护、Dirty Main、权限不足和历史平铺 Worktree 只报告不破坏；
+- 已存在 canonical Worktree 或 branch 已绑定非 canonical 健康 Worktree 时 `REUSED`，不重新创建、不移动；
+- stale metadata 仅在物理目录明确不存在且非 locked / inaccessible 时允许 `git worktree prune`；
+- 本轮创建的空临时目录允许安全清理，未知非空目录必须 `NEEDS_INPUT`；
+- dirty healthy Worktree 保留用户数据并复用，locked / inaccessible Worktree 返回 `NEEDS_ATTENTION`；
+- `CONTROL_PLANE_ROOT` 一旦锁定不得漂移，不产生 `_base_base`，branch 中的 `/` 不得成为目录层级；
+- 已有 branch、目标目录或同 Issue Worktree 的真实冲突、模板保护、Dirty Main、权限不足和历史平铺 Worktree 只报告不破坏；
 - UI / frontend / web 源码目录不会因为名称被忽略，已有 `.gitignore` 不被粗暴重写，已跟踪的 `dist/` / `build/` 不被取消跟踪；
 - 空仓库没有技术栈证据时不制造目录名驱动的 artifact ignore 规则。
 

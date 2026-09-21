@@ -1,5 +1,7 @@
 # Agent Workspace Rules
 
+> Source template version: `1.1.2`
+
 本文件由 `project-workspace-init` 首次 bootstrap 时复制到 initialized base。它描述项目协作边界；具体项目可以在 **Project-specific Rules** 中追加规则，但不得放宽安全约束。
 
 ## 两阶段输入规则
@@ -35,6 +37,31 @@ Workspace Root: <explicit absolute path>
 
 日常 Repository 优先从 `STATUS.md`、`AGENTS.md`、项目配置、当前 / Main Workspace 的 `origin` 和已有 Git 元数据解析。模板占位值不算可靠来源；只有无法可靠识别或来源冲突时才询问 Repository。
 
+### Resolved Workspace Context（一次解析并锁定）
+
+发现 initialized base 后，立即建立本次任务的 `Resolved Workspace Context`，至少记录：
+
+```text
+Repository
+Main Workspace
+Control Plane Root
+Worktree Root
+Default Branch
+Current Task
+Target Branch
+Canonical Worktree Path
+Existing Worktree Path (if any)
+```
+
+根目录一次锁定（只解析一次）：
+
+```text
+CONTROL_PLANE_ROOT = detected initialized base
+WORKTREE_ROOT     = CONTROL_PLANE_ROOT/worktrees
+```
+
+验证成功后，后续不得根据 repo 名、当前路径、parent、remote 或 `_base` 重新拼接 Workspace Root。若后续信息与已锁定根目录冲突，返回 `NEEDS_ATTENTION`，不得静默切换。已锁定 `/path/dbx-plugin-SchemaSeed_base` 时不得产生 `/path/dbx-plugin-SchemaSeed_base_base`，也不得回到共同父目录重新推导 `_base`。
+
 ## Workspace Layout
 
 ```text
@@ -65,7 +92,8 @@ Workspace Root: <explicit absolute path>
 - `EMPTY_REPOSITORY` 使用本地 `main` + `origin` 初始化，不自动创建首个 commit、README、placeholder 或 push；
 - 开始任务前确认 Main Workspace 的 `origin`、branch 和 working tree 状态；
 - 每个任务使用独立 Worktree 和独立 branch，不要在 Main Workspace 直接开发任务；
-- 默认 Worktree 路径为 `<Workspace Root>/worktrees/<worktree-name>`。
+- 默认 Worktree 路径为 `<Workspace Root>/worktrees/<worktree-name>`；
+- 新建 Worktree 的 canonical path 为 `<CONTROL_PLANE_ROOT>/worktrees/<worktree-name>`；branch 中的 `/` 不得成为目录层级。
 
 ### Branch 与 Worktree 自动生成
 
@@ -89,27 +117,56 @@ Worktree 名称按以下优先级生成：
 
 ```text
 <Workspace Root>/worktrees/issue-65-data-delivery
+
+branch:   feat/issue-4-host-api-contract
+canonical: <CONTROL_PLANE_ROOT>/worktrees/issue-4-host-api-contract
 ```
 
-而不是保留 `feat/` 作为目录层级。
+而不是保留 `feat/` 作为目录层级；branch 中的 `/` 不得成为目录层级。
 
-### 创建前冲突检查
+### 创建前判定与安全恢复
 
-创建前必须检查：
+创建 / 复用必须按固定顺序执行：
 
-- branch 是否已存在（本地 ref、远端跟踪 ref 或已有 Worktree）；
-- `git worktree list --porcelain` 中是否已有 branch 或目标路径；
-- 目标目录是否已存在；
-- 同一个 Issue 是否已有活跃 Worktree；
-- Main 与现有 Worktree 是否可安全操作。
+1. Detect initialized base；
+2. 锁定 `CONTROL_PLANE_ROOT` 与 `WORKTREE_ROOT`；
+3. 解析 Repository；
+4. 解析 Main Workspace；
+5. 解析目标 branch；
+6. 生成 canonical Worktree path；
+7. 读取 `git worktree list --porcelain`；
+8. 先匹配 branch，再匹配 canonical path；
+9. 分类为 `REUSED`、`STALE_WORKTREE_METADATA`、`SAFE_TEMP_RESIDUE` 或 `REAL_CONFLICT`；
+10. 最后才决定复用、prune、新建或停止。
 
-完全匹配的任务优先复用。branch 已被其他 Worktree 使用时复用已有 Worktree；branch 已存在但尚未关联 Worktree 时，验证后复用，不再次用 `-b` 创建同名 branch。真实冲突必须报告并请求用户决策，禁止自动生成 `issue-65-2`、`issue-65-new`、`issue-65-final`、`issue-65-copy` 等垃圾名称。
+`git worktree list --porcelain` 失败时返回 `NEEDS_ATTENTION`，不得猜测或 prune。
 
-冲突或 dirty 状态未解决前，不产生部分 branch、空目录或半初始化 Worktree。
+| 分类 | 判定 | 自动动作 |
+| --- | --- | --- |
+| `REUSED` | canonical 完全匹配，或目标 branch 已绑定另一个健康 Worktree | 复用真实路径，不重新创建、不 STOP |
+| `STALE_WORKTREE_METADATA` | metadata 有记录但物理目录已明确不存在，且没有 lock、已排除权限/挂载异常 | 在正确 Main Workspace 执行 `git worktree prune`，复查后按 canonical 创建 |
+| `SAFE_TEMP_RESIDUE` | 目录不是 Worktree / Repository，目录为空，并证明由本轮当前操作创建 | 只清理该空目录后重试 |
+| `REAL_CONFLICT` | 真实 Worktree、Repository、未知用户数据或任务身份冲突 | 不删除、不移动、不覆盖；按情况 `NEEDS_INPUT` 或 `NEEDS_ATTENTION` |
+
+完全匹配的任务直接 `State: REUSED`。branch 已被其他路径的健康 Worktree 使用时，也必须 `State: REUSED`；branch 的真实绑定优先于 canonical path，以真实 Git branch 绑定为准，不因为旧路径不符合最新 canonical 命名而 STOP、移动或重命名。canonical path 只约束新建 Worktree。
+
+Git metadata 指向不存在的物理目录时，只有能确认目录确实不存在、父目录可访问、没有 `lock` 且不是权限 / 网络挂载异常，才是 `STALE_WORKTREE_METADATA`；否则 `NEEDS_ATTENTION`，不得 prune。
+
+目标目录只有在同时满足“为空、不是 Git Worktree、不是 Git Repository、由本轮当前操作创建”时才是 `SAFE_TEMP_RESIDUE`，只允许删除空目录本身，不得使用 `rm -rf`。未知非空目录或归属无法证明时是 `REAL_CONFLICT`，返回 `NEEDS_INPUT`，不得删除、`git clean` 或自动生成 `-2` / `-new` / `-final`。
+
+健康 Worktree 即使有 staged changes、unstaged changes 或 untracked user files，也保留用户数据并按 `REUSED` 报告 `DIRTY`；不得 prune、删除、移动、覆盖、reset、clean 或重建。只有身份冲突或必须迁移 / 删除才能继续时才 `NEEDS_INPUT`。locked / inaccessible Worktree 或无法证明 stale 时 `NEEDS_ATTENTION`。
+
+旧规范路径（例如 `worktrees/issue-4`）只要 branch、Git metadata 和任务身份正确，就执行 `REUSE existing healthy worktree`。冲突或 dirty 状态未解决前，不产生新的部分 branch 或半初始化 Worktree。
 
 ## 安全 Git 规则
 
-- 严禁自动执行 `git reset --hard`、`git clean -fd`、`git clean -fdx`、force push、删除 branch、删除或移动已有 Worktree、自动 stash、自动 commit 或自动 push；
+- 禁止删除、移动或覆盖仍真实存在且可能承载用户工作的健康 Worktree；
+- 以下属于允许的安全恢复，不视为破坏性 Worktree 操作：
+  1. 复用已绑定目标 branch 的健康 Worktree；
+  2. 对物理目录已确认不存在的 stale worktree metadata 执行 `git worktree prune`；
+  3. 清理由本轮当前操作创建、已确认为空、且不属于 Git Worktree / Git Repository 的临时目录；
+  4. 健康旧 Worktree 路径不符合最新命名规范时继续复用，不为了路径规范化迁移或阻断任务。
+- 除上述可证明安全的恢复外，不自动执行 `git reset --hard`、`git clean -fd`、`git clean -fdx`、force push、删除 branch、自动 stash、自动 commit 或自动 push；
 - 已有冲突、未提交修改、remote 不一致或权限问题时先停止并报告，不以破坏数据换取“干净”状态；
 - `READY != MERGED`；PR 创建成功不等于已合并；
 - 只提交当前任务直接相关的文件，不把其他 Agent 的改动带入提交。
