@@ -33,6 +33,18 @@
 
 bootstrap 完成后，`/vol5/1000/ai-workspace/data-warehouse-visualized_base/` 会被识别为日常操作的 Workspace Root。
 
+如果 `Repository` 已在 GitHub 创建但仍然完全为空（没有 branch、default branch 或 commit），这也是合法的 bootstrap 场景。脚本会走 `Empty Repository Bootstrap`：
+
+```text
+Remote State: EMPTY_REPOSITORY
+Main Workspace: /vol5/1000/ai-workspace/data-warehouse-visualized/
+Local branch: main
+Remote origin: configured
+Remote main: not created yet
+```
+
+此路径使用本地 `git init -b main`，只配置 `origin`，不会生成 README、自动 commit 或 push；同时仍创建 `data-warehouse-visualized_base/` 及其控制面目录。
+
 ## 初始化完成后的日常操作
 
 当前目录或其父目录包含完整的：

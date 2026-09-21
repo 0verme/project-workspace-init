@@ -61,6 +61,8 @@ Workspace Root: <explicit absolute path>
 - bootstrap 阶段才要求 Repository 与 bootstrap Workspace Root 都由用户显式提供；
 - 日常 Git / 文件系统写操作先确认已发现 initialized base 和可靠 Repository，不要求重复提供 Workspace Root 或 Worktree 绝对路径；
 - 不假定 remote default branch 名为 `main`，先读取并记录真实 default branch；
+- 远程状态分为 `REPOSITORY_NOT_FOUND`、`EMPTY_REPOSITORY` 和 `EXISTING_REPOSITORY`；空仓库是合法 bootstrap 场景；
+- `EMPTY_REPOSITORY` 使用本地 `main` + `origin` 初始化，不自动创建首个 commit、README、placeholder 或 push；
 - 开始任务前确认 Main Workspace 的 `origin`、branch 和 working tree 状态；
 - 每个任务使用独立 Worktree 和独立 branch，不要在 Main Workspace 直接开发任务；
 - 默认 Worktree 路径为 `<Workspace Root>/worktrees/<worktree-name>`。
@@ -107,7 +109,7 @@ Worktree 名称按以下优先级生成：
 
 ## 安全 Git 规则
 
-- 严禁自动执行 `git reset --hard`、`git clean -fd`、`git clean -fdx`、force push、删除 branch、删除或移动已有 Worktree、自动 stash 或自动提交；
+- 严禁自动执行 `git reset --hard`、`git clean -fd`、`git clean -fdx`、force push、删除 branch、删除或移动已有 Worktree、自动 stash、自动 commit 或自动 push；
 - 已有冲突、未提交修改、remote 不一致或权限问题时先停止并报告，不以破坏数据换取“干净”状态；
 - `READY != MERGED`；PR 创建成功不等于已合并；
 - 只提交当前任务直接相关的文件，不把其他 Agent 的改动带入提交。
