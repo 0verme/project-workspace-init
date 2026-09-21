@@ -82,6 +82,13 @@ worktree: /vol5/1000/ai-workspace/data-warehouse-visualized_base/worktrees/issue
 - 脚本不会执行 `sudo`、`su`、`chmod -R 777`、`chown -R` 或 ACL 重置；
 - 已有 Main Workspace dirty、已有模板或历史平铺 Worktree 时只报告，不覆盖、移动、删除或 repair。
 
+## Source Code 与 Generated Artifacts
+
+- 源代码目录看职责，不看目录名：包含正式源码的 `ui/`、`frontend/`、`web/` 应正常纳入 Git，不作为通用忽略目录；初始化阶段也不禁止正常 UI / frontend 开发。
+- `dist/`、`build/`、`.next/`、`coverage/` 通常倾向于不提交，但必须先检查现有 `.gitignore`、`git ls-files`、项目文档、CI/CD、GitHub Pages / Release / npm 发布方式和构建分发模型。
+- bootstrap 不重写已有 `.gitignore`，不通用追加上述目录，也不通过 `git rm -r --cached ...` 改变跟踪状态。空仓库没有技术栈证据时，不自动决定生成产物策略。
+- 没有明确 UI 需求时不擅自引入 React、Vue、Vite、Next.js；这不是禁止已有项目或用户需求中的 UI 开发。
+
 ## 跨机器边界
 
 FNOS 上的 Main Repository 只能与同一 FNOS / Linux 文件系统侧的 linked Worktree 配合。Windows 与 FNOS 如需维护同一 GitHub 项目，应各自 clone，通过 Git remote 同步，不要共享 linked-worktree metadata。
