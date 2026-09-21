@@ -47,6 +47,16 @@ worktrees/
 
 这里的两个名称含义需要区分：bootstrap 命令的 `Workspace Root` 是 `<repo>/` 与 `<repo>_base/` 的共同父目录；初始化成功后，日常规则中的 `Workspace Root` 是已经发现的 `<repo>_base/`。
 
+Bootstrap 有两条明确路径：
+
+```text
+Bootstrap
+├── Existing Repository Bootstrap
+└── Empty Repository Bootstrap
+```
+
+GitHub 仓库为空并不是错误。只要 `Repository` 和 bootstrap `Workspace Root` 都由用户明确提供，Skill 就可以完成本地 Workspace 初始化。
+
 ## 安装到 Pi
 
 ### Linux / FNOS / NAS
@@ -157,6 +167,38 @@ POSIX:   /vol5/1000/ai-workspace
 - bootstrap 完成后 `<repo>_base/` 就是日常规则中的 Workspace Root；
 - 任务 Worktree 必须位于 `<repo>_base/worktrees/<task>`，不要平铺到共同父目录。
 
+## 远程仓库状态与 bootstrap 路径
+
+远程探测会明确区分：
+
+- `REPOSITORY_NOT_FOUND`：仓库不存在、无权限或无法确认存在；停止，不创建目录；
+- `EMPTY_REPOSITORY`：GitHub 仓库存在，但没有 branch / default branch；这是合法的首次 bootstrap；
+- `EXISTING_REPOSITORY`：至少存在一个 branch / commit，继续现有 clone / alignment 流程。
+
+### Empty Repository Bootstrap
+
+空仓库不会执行 clone，也不要求远端预先存在 `origin/main`。Skill 会：
+
+1. 创建 `<repo>/`；
+2. 在其中执行等价于 `git init -b main` 的本地初始化；
+3. 配置用户明确提供的 `origin`；
+4. 创建 `<repo>_base/`、`AGENTS.md`、`STATUS.md`、`status/`、`integration/` 和 `worktrees/`。
+
+成功结果为 `STATUS: SUCCESS`，并报告：
+
+```text
+Remote State: EMPTY_REPOSITORY
+Current Branch: main
+Origin: CONFIGURED
+Remote main: not created yet
+```
+
+不会自动生成 README、placeholder、首个 commit 或 push。空仓库的本地 `main` 可以在没有 `origin/main` 的情况下保持 ready。
+
+### Existing Repository Bootstrap
+
+非空仓库仍然读取远程真实 default branch 后 clone。default branch 可以是 `main`、`master`、`develop`、`trunk` 或其他合法名称；不会因为支持空仓库而强制改成 `main`。
+
 ## 日常 Worktree 自动生成规则
 
 用户要求开 Worktree、处理 Issue、开分支或开始任务时，默认使用：
@@ -252,8 +294,9 @@ worktree: <Workspace Root>/worktrees/issue-65-data-delivery
 
 ## Main Workspace 与安全边界
 
-- Main Workspace 不存在时，先读取 remote default branch，再 clone 到 `<Bootstrap Workspace Root>/<repo>`；
-- Main Workspace 已存在时，只检查 Git top level、`origin`、branch、remote default branch和 working tree；
+- Existing Repository 的 Main Workspace 不存在时，先读取 remote default branch，再 clone 到 `<Bootstrap Workspace Root>/<repo>`；
+- Empty Repository 的 Main Workspace 不存在时，执行本地 `git init -b main` 并配置 `origin`，不创建 commit 或 push；
+- Main Workspace 已存在时，只检查 Git top level、`origin`、branch、remote 状态和 working tree；空仓库要求当前 branch 为 `main`；
 - Dirty Main 只报告 `STATUS: NEEDS_ATTENTION`，不会 reset、stash、clean、覆盖 checkout 或自动提交；
 - 不假定默认分支叫 `main`；已有 Main 不在 remote default branch 时不自动切换；
 - Main Repository 与 linked Worktree 必须在同一运行环境和同一文件系统侧；Windows 与 FNOS 如需维护同一 GitHub 项目，应各自 clone，通过 Git remote 同步；
@@ -279,9 +322,19 @@ Shell 脚本会检查 Root 是否存在、是否为目录以及当前用户是�
 
 ## 验证重点
 
+POSIX bootstrap 的可重复场景测试可运行：
+
+```sh
+sh tests/test-init-workspace.sh
+```
+
+测试使用 fake Git 远程探测，不会创建 GitHub commit 或 push，覆盖空远程、远程不存在、main / 非 main default branch、已有非 Git 目录、origin 冲突、幂等重跑以及缺少输入。
+
 验证应覆盖：
 
 - 首次 bootstrap 缺少 Repository / Workspace Root 时只返回 `NEEDS_INPUT`；
+- 空远程仓库完成本地 `main` + Agent Control Plane 初始化，且不创建自动 commit / push；
+- 远程不存在或无法确认时返回 `NEEDS_ATTENTION`，不创建目录；
 - 已有 `AGENTS.md`、`STATUS.md`、`worktrees/` 时自动识别 base，不再次索要 Workspace Root；
 - `处理 #65` 自动生成 branch 与 Worktree；
 - 从 `feat/issue-65-data-delivery` 生成 `issue-65-data-delivery` 而非嵌套 `feat/` 目录；

@@ -3,7 +3,7 @@ name: project-workspace-init
 description: Safely bootstrap Git main workspaces and manage initialized-project worktrees without repeatedly requesting paths.
 license: MIT
 metadata:
-  version: "1.1.0"
+  version: "1.1.1"
   platforms: "Windows, Linux, FNOS"
 ---
 
@@ -129,15 +129,43 @@ Linux / FNOS：
 - bootstrap 完成后，`<repo>_base/` 就是日常规则中的 `Workspace Root`；
 - 所有任务 Worktree 默认属于 `<repo>_base/worktrees/`，不得平铺到共同父目录。
 
-Bootstrap 必须：
+Bootstrap 必须先探测远程状态，再选择对应路径。远程状态至少分为：
+
+```text
+REPOSITORY_NOT_FOUND
+EMPTY_REPOSITORY
+EXISTING_REPOSITORY
+```
+
+- `REPOSITORY_NOT_FOUND`：仓库不存在、无权限访问或无法确认存在。停止并返回当前等价的 `NEEDS_INPUT` / `NEEDS_ATTENTION`，不得创建目录。
+- `EMPTY_REPOSITORY`：GitHub 仓库已确认存在，但没有 remote branch、没有 default branch。空仓库是合法的首次 bootstrap 场景，不是异常。
+- `EXISTING_REPOSITORY`：至少有一个 remote branch / commit，并且可以读取真实 default branch。
+
+### Existing Repository Bootstrap
+
+`EXISTING_REPOSITORY` 必须继续使用正常的 clone / alignment 流程：
 
 1. 读取 remote advertised default branch，不假设名字是 `main`；
 2. 将显式 Repository clone 到 `<Bootstrap Workspace Root>/<repo>`（不存在时）；
-3. 验证 `origin`、当前 branch、remote default branch 和 clean working tree；
-4. 只创建缺失目录与缺失模板，不覆盖已有 `AGENTS.md`、`STATUS.md` 或用户数据；
-5. 重复执行时保持幂等，不重新 clone、不删除 branch / Worktree、不 reset、不 stash、不自动提交。
+3. 验证 `origin`、当前 branch、remote default branch 和 clean working tree。
 
-Main Workspace 已存在但 dirty、remote 不一致、处于 detached HEAD、权限不足或其他安全条件不满足时，返回 `STATUS: NEEDS_ATTENTION`，不得自行修复。
+### Empty Repository Bootstrap
+
+`EMPTY_REPOSITORY` 不调用 clone，也不要求远端先创建 `origin/main`。当 `<repo>/` 不存在时：
+
+1. 在 `<Bootstrap Workspace Root>/<repo>` 执行本地 `git init -b main`；
+2. 配置 `origin` 为用户明确提供的 Repository；
+3. 验证当前 branch 为 `main`、origin 正确且 working tree clean；
+4. 不创建 commit、不生成 README、不 push，也不制造 placeholder 文件。
+
+空仓库成功时仍返回项目现有的成功状态 `STATUS: SUCCESS`，并明确报告 `Remote State: EMPTY_REPOSITORY`、`Remote main: not created yet`。本地 `main` 存在而 `origin/main` 尚不存在是正常状态。
+
+### Common Bootstrap Rules
+
+1. 只创建缺失目录与缺失模板，不覆盖已有 `AGENTS.md`、`STATUS.md` 或用户数据；
+2. 重复执行时保持幂等，不重新 clone、不删除 branch / Worktree、不 reset、不 stash、不自动提交；
+3. Main Workspace 已存在但 dirty、remote 不一致、处于 detached HEAD、权限不足或其他安全条件不满足时，返回 `STATUS: NEEDS_ATTENTION`，不得自行修复；
+4. 空仓库中已经存在的 Main Workspace 也必须是目标仓库、`main` branch；origin 不一致时停止，不能擅自修改。
 
 ## 4. 已初始化项目的 Repository 解析
 
@@ -257,13 +285,13 @@ worktree: <Workspace Root>/worktrees/issue-65-data-delivery
 - 用户没有提供 branch，但有 Issue 或明确任务描述；
 - 用户没有提供 branch 名称，但有明确 Worktree 名称。
 
-权限不足、Main dirty、remote 不一致、Git 不可用、目录类型错误或脚本 / 网络失败应返回 `STATUS: NEEDS_ATTENTION`，而不是反复索要 Workspace Root。
+权限不足、Main dirty、remote 不一致、Git 不可用、目录类型错误或脚本 / 网络失败应返回 `STATUS: NEEDS_ATTENTION`，而不是反复索要 Workspace Root；远程已确认存在但为空不属于这些异常。
 
 ## 7. 安全边界与状态
 
 - Main Repository 与 linked Worktree 必须位于同一运行环境和同一文件系统侧；
 - 不跨 Windows / Linux / FNOS 共享 linked-worktree metadata；
-- 不自动执行 `git reset --hard`、`git clean`、force push、删除 branch、删除或移动已有 Worktree、自动 stash 或自动提交；
+- 不自动执行 `git reset --hard`、`git clean`、force push、删除 branch、删除或移动已有 Worktree、自动 stash、自动 commit 或自动 push；
 - Dirty Main 或冲突只报告事实、路径和下一步，不以破坏数据换取“干净”；
 - `READY` 不等于 `MERGED`，创建 PR 也不等于已合并；
 - 使用 `CREATED`、`EXISTS`、`KEEP`、`REUSED`、`WARNING`、`NEEDS_INPUT`、`NEEDS_ATTENTION` 等可行动状态。

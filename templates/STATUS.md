@@ -12,8 +12,10 @@
 ## Current Main
 
 - Path: `<Bootstrap Root>/<repo>`
-- Branch: `<remote-default-branch>`
+- Remote State: `<EXISTING_REPOSITORY|EMPTY_REPOSITORY>`
+- Branch: `<remote-default-branch-or-main-for-empty-repository>`
 - Origin: `<Repository>`
+- Remote main: `<existing-or-not-created-yet>`
 - Working Tree: `CLEAN`
 
 ## Active Tasks

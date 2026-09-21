@@ -191,6 +191,65 @@ function Get-DefaultBranch {
     }
 }
 
+function Get-RemoteState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepositoryRef
+    )
+
+    # A successful --heads probe with no refs is the reliable empty-repository
+    # signal. A failed probe means the repository cannot be confirmed safely.
+    $headsResult = Invoke-GitCommand -Arguments @('ls-remote', '--heads', $RepositoryRef)
+    if ($headsResult.ExitCode -ne 0) {
+        return [pscustomobject]@{
+            State = 'REPOSITORY_NOT_FOUND'
+            BranchCount = 0
+            DefaultBranch = $null
+            Error = "Unable to confirm the remote repository: $($headsResult.Output.Trim())"
+        }
+    }
+
+    $branchCount = @(
+        $headsResult.Output -split "`r?`n" |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    ).Count
+    if ($branchCount -eq 0) {
+        # Confirm that HEAD is also not advertised before accepting the empty
+        # repository state. A successful HEAD probe with a branch ref wins.
+        $emptyDefaultInfo = Get-DefaultBranch -RepositoryRef $RepositoryRef
+        if ($emptyDefaultInfo.Valid) {
+            return [pscustomobject]@{
+                State = 'EXISTING_REPOSITORY'
+                BranchCount = 0
+                DefaultBranch = $emptyDefaultInfo.Branch
+                Error = $null
+            }
+        }
+        if ($emptyDefaultInfo.Error -ne 'The remote did not advertise a default branch.') {
+            return [pscustomobject]@{
+                State = 'REPOSITORY_NOT_FOUND'
+                BranchCount = 0
+                DefaultBranch = $null
+                Error = "Unable to confirm the remote repository: $($emptyDefaultInfo.Error)"
+            }
+        }
+        return [pscustomobject]@{
+            State = 'EMPTY_REPOSITORY'
+            BranchCount = 0
+            DefaultBranch = $null
+            Error = $null
+        }
+    }
+
+    $defaultInfo = Get-DefaultBranch -RepositoryRef $RepositoryRef
+    return [pscustomobject]@{
+        State = 'EXISTING_REPOSITORY'
+        BranchCount = $branchCount
+        DefaultBranch = if ($defaultInfo.Valid) { $defaultInfo.Branch } else { $null }
+        Error = if ($defaultInfo.Valid) { $null } else { $defaultInfo.Error }
+    }
+}
+
 function Get-RemoteIdentity {
     param(
         [Parameter(Mandatory = $true)]
@@ -247,7 +306,8 @@ function Inspect-MainWorkspace {
         [Parameter(Mandatory = $true)]
         [string]$MainPath,
         [Parameter(Mandatory = $true)]
-        [string]$ExpectedIdentity
+        [string]$ExpectedIdentity,
+        [string]$RemoteState = 'EXISTING_REPOSITORY'
     )
 
     $reasons = New-Object System.Collections.Generic.List[string]
@@ -296,9 +356,14 @@ function Inspect-MainWorkspace {
         }
     }
 
-    $defaultInfo = Get-DefaultBranch -RepositoryRef 'origin' -WorkingDirectory $MainPath
-    if (-not $defaultInfo.Valid) {
-        $reasons.Add($defaultInfo.Error)
+    if ($RemoteState -eq 'EMPTY_REPOSITORY') {
+        $defaultInfo = $null
+    }
+    else {
+        $defaultInfo = Get-DefaultBranch -RepositoryRef 'origin' -WorkingDirectory $MainPath
+        if (-not $defaultInfo.Valid) {
+            $reasons.Add($defaultInfo.Error)
+        }
     }
 
     $branchResult = Invoke-GitCommand -WorkingDirectory $MainPath -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD')
@@ -306,7 +371,10 @@ function Inspect-MainWorkspace {
     if ($branchResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($currentBranch)) {
         $reasons.Add('Main Workspace is detached or its current branch cannot be read.')
     }
-    elseif ($defaultInfo.Valid -and $currentBranch -ne $defaultInfo.Branch) {
+    elseif ($RemoteState -eq 'EMPTY_REPOSITORY' -and $currentBranch -ne 'main') {
+        $reasons.Add("Current branch '$currentBranch' must be 'main' for an empty remote repository.")
+    }
+    elseif ($null -ne $defaultInfo -and $defaultInfo.Valid -and $currentBranch -ne $defaultInfo.Branch) {
         $reasons.Add("Current branch '$currentBranch' is not remote default branch '$($defaultInfo.Branch)'.")
     }
 
@@ -323,7 +391,7 @@ function Inspect-MainWorkspace {
         Valid = $reasons.Count -eq 0
         Dirty = $dirty
         CurrentBranch = $currentBranch
-        DefaultBranch = if ($defaultInfo.Valid) { $defaultInfo.Branch } else { $null }
+        DefaultBranch = if ($null -ne $defaultInfo -and $defaultInfo.Valid) { $defaultInfo.Branch } else { $null }
         Origin = $origin
         Reasons = @($reasons)
     }
@@ -415,10 +483,25 @@ if ($preflightReasons.Count -gt 0) {
     Stop-Attention -Headline 'Workspace preflight failed.' -Reasons @($preflightReasons)
 }
 
+$remoteStateInfo = Get-RemoteState -RepositoryRef $repositorySpec.CloneUrl
+if ($remoteStateInfo.State -eq 'REPOSITORY_NOT_FOUND') {
+    Stop-Attention -Headline 'Remote repository validation failed.' -Reasons @(
+        "Remote State: $($remoteStateInfo.State)",
+        $remoteStateInfo.Error
+    )
+}
+if ($remoteStateInfo.State -eq 'EXISTING_REPOSITORY' -and
+    [string]::IsNullOrWhiteSpace($remoteStateInfo.DefaultBranch)) {
+    Stop-Attention -Headline 'Remote repository default branch cannot be determined safely.' -Reasons @(
+        "Remote State: $($remoteStateInfo.State)",
+        $remoteStateInfo.Error
+    )
+}
+
 $mainStatus = $null
 $inspection = $null
 if ($mainExists) {
-    $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity
+    $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState $remoteStateInfo.State
     if ($inspection.Dirty) {
         $remainingReasons = @($inspection.Reasons | Where-Object { $_ -ne 'Main Workspace: DIRTY' })
         Stop-Attention -Headline 'Main Workspace: DIRTY' -Reasons $remainingReasons
@@ -429,35 +512,61 @@ if ($mainExists) {
     $mainStatus = 'EXISTS'
 }
 else {
-    $cloneDefaultInfo = Get-DefaultBranch -RepositoryRef $repositorySpec.CloneUrl
-    if (-not $cloneDefaultInfo.Valid) {
-        Stop-Attention -Headline 'Main Workspace cannot be cloned safely.' -Reasons @($cloneDefaultInfo.Error)
-    }
-
-    $cloneResult = Invoke-GitCommand -WorkingDirectory $rootPath -Arguments @(
-        'clone',
-        '--origin', 'origin',
-        '--branch', $cloneDefaultInfo.Branch,
-        $repositorySpec.CloneUrl,
-        $mainPath
-    )
-    if ($cloneResult.ExitCode -ne 0) {
-        $cloneMessage = $cloneResult.Output.Trim()
-        if ([string]::IsNullOrWhiteSpace($cloneMessage)) {
-            $cloneMessage = 'git clone returned a non-zero exit code.'
+    if ($remoteStateInfo.State -eq 'EMPTY_REPOSITORY') {
+        $initResult = Invoke-GitCommand -WorkingDirectory $rootPath -Arguments @('init', '-b', 'main', $mainPath)
+        if ($initResult.ExitCode -ne 0) {
+            $initMessage = $initResult.Output.Trim()
+            if ([string]::IsNullOrWhiteSpace($initMessage)) {
+                $initMessage = 'git init returned a non-zero exit code.'
+            }
+            Stop-Attention -Headline 'Empty Repository Bootstrap failed.' -Reasons @($initMessage)
         }
-        Stop-Attention -Headline 'Main Workspace clone failed.' -Reasons @($cloneMessage)
-    }
 
-    $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity
-    if ($inspection.Dirty) {
-        $remainingReasons = @($inspection.Reasons | Where-Object { $_ -ne 'Main Workspace: DIRTY' })
-        Stop-Attention -Headline 'Main Workspace: DIRTY' -Reasons $remainingReasons
+        $remoteResult = Invoke-GitCommand -WorkingDirectory $mainPath -Arguments @('remote', 'add', 'origin', $repositorySpec.CloneUrl)
+        if ($remoteResult.ExitCode -ne 0) {
+            $remoteMessage = $remoteResult.Output.Trim()
+            if ([string]::IsNullOrWhiteSpace($remoteMessage)) {
+                $remoteMessage = 'git remote add returned a non-zero exit code.'
+            }
+            Stop-Attention -Headline 'Empty Repository Bootstrap failed.' -Reasons @($remoteMessage)
+        }
+
+        $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState 'EMPTY_REPOSITORY'
+        if ($inspection.Dirty) {
+            $remainingReasons = @($inspection.Reasons | Where-Object { $_ -ne 'Main Workspace: DIRTY' })
+            Stop-Attention -Headline 'Main Workspace: DIRTY' -Reasons $remainingReasons
+        }
+        if (-not $inspection.Valid) {
+            Stop-Attention -Headline 'Empty Repository Bootstrap verification failed.' -Reasons @($inspection.Reasons)
+        }
+        $mainStatus = 'CREATED'
     }
-    if (-not $inspection.Valid) {
-        Stop-Attention -Headline 'Cloned Main Workspace verification failed.' -Reasons @($inspection.Reasons)
+    else {
+        $cloneResult = Invoke-GitCommand -WorkingDirectory $rootPath -Arguments @(
+            'clone',
+            '--origin', 'origin',
+            '--branch', $remoteStateInfo.DefaultBranch,
+            $repositorySpec.CloneUrl,
+            $mainPath
+        )
+        if ($cloneResult.ExitCode -ne 0) {
+            $cloneMessage = $cloneResult.Output.Trim()
+            if ([string]::IsNullOrWhiteSpace($cloneMessage)) {
+                $cloneMessage = 'git clone returned a non-zero exit code.'
+            }
+            Stop-Attention -Headline 'Main Workspace clone failed.' -Reasons @($cloneMessage)
+        }
+
+        $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState 'EXISTING_REPOSITORY'
+        if ($inspection.Dirty) {
+            $remainingReasons = @($inspection.Reasons | Where-Object { $_ -ne 'Main Workspace: DIRTY' })
+            Stop-Attention -Headline 'Main Workspace: DIRTY' -Reasons $remainingReasons
+        }
+        if (-not $inspection.Valid) {
+            Stop-Attention -Headline 'Cloned Main Workspace verification failed.' -Reasons @($inspection.Reasons)
+        }
+        $mainStatus = 'CREATED'
     }
-    $mainStatus = 'CREATED'
 }
 
 $legacyCandidates = New-Object System.Collections.Generic.List[string]
@@ -523,9 +632,17 @@ Write-Output 'STATUS: SUCCESS'
 Write-Output "Repository: $($repositorySpec.Identity)"
 Write-Output "Workspace Root: $rootPath"
 Write-Output "Main Workspace: $mainPath ($mainStatus)"
+Write-Output "Remote State: $($remoteStateInfo.State)"
 Write-Output "Current Branch: $($inspection.CurrentBranch)"
-Write-Output "Default Branch: $($inspection.DefaultBranch)"
-Write-Output 'Origin: VERIFIED'
+$displayDefaultBranch = if ([string]::IsNullOrWhiteSpace($inspection.DefaultBranch)) { 'none' } else { $inspection.DefaultBranch }
+Write-Output "Default Branch: $displayDefaultBranch"
+if ($remoteStateInfo.State -eq 'EMPTY_REPOSITORY') {
+    Write-Output 'Origin: CONFIGURED'
+    Write-Output 'Remote main: not created yet'
+}
+else {
+    Write-Output 'Origin: VERIFIED'
+}
 Write-Output 'Working Tree: CLEAN'
 Write-Output "Base Workspace: $basePath ($baseStatus)"
 foreach ($item in $directoryStatuses) {

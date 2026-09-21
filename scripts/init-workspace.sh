@@ -273,6 +273,60 @@ EOF
     return 1
 }
 
+REMOTE_STATE=''
+REMOTE_BRANCH_COUNT=0
+REMOTE_DEFAULT_BRANCH=''
+REMOTE_ERROR=''
+classify_remote() {
+    repository_ref=$1
+    REMOTE_STATE=''
+    REMOTE_BRANCH_COUNT=0
+    REMOTE_DEFAULT_BRANCH=''
+    REMOTE_ERROR=''
+
+    # A successful --heads probe with no refs is the reliable empty-repository
+    # signal. A failed probe means the repository cannot be confirmed safely.
+    git_capture_global ls-remote --heads "$repository_ref"
+    if [ "$GIT_EXIT" -ne 0 ]; then
+        REMOTE_STATE=REPOSITORY_NOT_FOUND
+        REMOTE_ERROR="Unable to confirm the remote repository: ${GIT_OUTPUT:-git returned a non-zero exit code.}"
+        return 1
+    fi
+
+    while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            REMOTE_BRANCH_COUNT=$((REMOTE_BRANCH_COUNT + 1))
+        fi
+    done <<EOF
+$GIT_OUTPUT
+EOF
+
+    if [ "$REMOTE_BRANCH_COUNT" -eq 0 ]; then
+        # Confirm that HEAD is also not advertised before accepting the empty
+        # repository state. A successful HEAD probe with a branch ref wins.
+        if get_default_branch "$repository_ref"; then
+            REMOTE_STATE=EXISTING_REPOSITORY
+            REMOTE_DEFAULT_BRANCH=$DEFAULT_BRANCH
+            return 0
+        fi
+        if [ "$DEFAULT_ERROR" != 'The remote did not advertise a default branch.' ]; then
+            REMOTE_STATE=REPOSITORY_NOT_FOUND
+            REMOTE_ERROR="Unable to confirm the remote repository: $DEFAULT_ERROR"
+            return 1
+        fi
+        REMOTE_STATE=EMPTY_REPOSITORY
+        return 0
+    fi
+
+    REMOTE_STATE=EXISTING_REPOSITORY
+    if get_default_branch "$repository_ref"; then
+        REMOTE_DEFAULT_BRANCH=$DEFAULT_BRANCH
+    else
+        REMOTE_ERROR=$DEFAULT_ERROR
+    fi
+    return 0
+}
+
 INSPECT_VALID=0
 INSPECT_DIRTY=0
 INSPECT_CURRENT_BRANCH=''
@@ -291,6 +345,7 @@ add_inspect_reason() {
 inspect_main() {
     working_directory=$1
     expected=$2
+    remote_state=${3-EXISTING_REPOSITORY}
     INSPECT_VALID=0
     INSPECT_DIRTY=0
     INSPECT_CURRENT_BRANCH=''
@@ -332,7 +387,9 @@ inspect_main() {
         fi
     fi
 
-    if get_default_branch origin "$working_directory"; then
+    if [ "$remote_state" = EMPTY_REPOSITORY ]; then
+        INSPECT_DEFAULT_BRANCH=''
+    elif get_default_branch origin "$working_directory"; then
         INSPECT_DEFAULT_BRANCH=$DEFAULT_BRANCH
     else
         add_inspect_reason "$DEFAULT_ERROR"
@@ -343,7 +400,11 @@ inspect_main() {
         add_inspect_reason 'Main Workspace is detached or its current branch cannot be read.'
     else
         INSPECT_CURRENT_BRANCH=$GIT_OUTPUT
-        if [ -n "$INSPECT_DEFAULT_BRANCH" ] && [ "$INSPECT_CURRENT_BRANCH" != "$INSPECT_DEFAULT_BRANCH" ]; then
+        if [ "$remote_state" = EMPTY_REPOSITORY ]; then
+            if [ "$INSPECT_CURRENT_BRANCH" != 'main' ]; then
+                add_inspect_reason "Current branch '$INSPECT_CURRENT_BRANCH' must be 'main' for an empty remote repository."
+            fi
+        elif [ -n "$INSPECT_DEFAULT_BRANCH" ] && [ "$INSPECT_CURRENT_BRANCH" != "$INSPECT_DEFAULT_BRANCH" ]; then
             add_inspect_reason "Current branch '$INSPECT_CURRENT_BRANCH' is not remote default branch '$INSPECT_DEFAULT_BRANCH'."
         fi
     fi
@@ -411,9 +472,16 @@ if path_exists "$base_path"; then
     fi
 fi
 
+if ! classify_remote "$REPOSITORY_CLONE_URL"; then
+    stop_attention 'Remote repository validation failed.' "Remote State: $REMOTE_STATE; $REMOTE_ERROR"
+fi
+if [ "$REMOTE_STATE" = EXISTING_REPOSITORY ] && [ -z "$REMOTE_DEFAULT_BRANCH" ]; then
+    stop_attention 'Remote repository default branch cannot be determined safely.' "Remote State: $REMOTE_STATE; $REMOTE_ERROR"
+fi
+
 main_status=
 if [ "$main_exists" -eq 1 ]; then
-    inspect_main "$main_path" "$expected_identity" || true
+    inspect_main "$main_path" "$expected_identity" "$REMOTE_STATE" || true
     if [ "$INSPECT_DIRTY" -eq 1 ]; then
         stop_attention 'Main Workspace: DIRTY' "$INSPECT_REASONS"
     fi
@@ -422,25 +490,45 @@ if [ "$main_exists" -eq 1 ]; then
     fi
     main_status=EXISTS
 else
-    if ! get_default_branch "$REPOSITORY_CLONE_URL"; then
-        stop_attention 'Main Workspace cannot be cloned safely.' "$DEFAULT_ERROR"
-    fi
-    clone_default_branch=$DEFAULT_BRANCH
+    if [ "$REMOTE_STATE" = EMPTY_REPOSITORY ]; then
+        git_capture_global init -b main "$main_path"
+        if [ "$GIT_EXIT" -ne 0 ]; then
+            init_message=${GIT_OUTPUT:-git init returned a non-zero exit code.}
+            stop_attention 'Empty Repository Bootstrap failed.' "$init_message"
+        fi
 
-    git_capture "$root_path" clone --origin origin --branch "$clone_default_branch" "$REPOSITORY_CLONE_URL" "$main_path"
-    if [ "$GIT_EXIT" -ne 0 ]; then
-        clone_message=${GIT_OUTPUT:-git clone returned a non-zero exit code.}
-        stop_attention 'Main Workspace clone failed.' "$clone_message"
-    fi
+        git_capture "$main_path" remote add origin "$REPOSITORY_CLONE_URL"
+        if [ "$GIT_EXIT" -ne 0 ]; then
+            remote_message=${GIT_OUTPUT:-git remote add returned a non-zero exit code.}
+            stop_attention 'Empty Repository Bootstrap failed.' "$remote_message"
+        fi
 
-    inspect_main "$main_path" "$expected_identity" || true
-    if [ "$INSPECT_DIRTY" -eq 1 ]; then
-        stop_attention 'Main Workspace: DIRTY' "$INSPECT_REASONS"
+        inspect_main "$main_path" "$expected_identity" EMPTY_REPOSITORY || true
+        if [ "$INSPECT_DIRTY" -eq 1 ]; then
+            stop_attention 'Main Workspace: DIRTY' "$INSPECT_REASONS"
+        fi
+        if [ "$INSPECT_VALID" -ne 1 ]; then
+            stop_attention 'Empty Repository Bootstrap verification failed.' "$INSPECT_REASONS"
+        fi
+        main_status=CREATED
+    else
+        clone_default_branch=$REMOTE_DEFAULT_BRANCH
+
+        git_capture "$root_path" clone --origin origin --branch "$clone_default_branch" "$REPOSITORY_CLONE_URL" "$main_path"
+        if [ "$GIT_EXIT" -ne 0 ]; then
+            clone_message=${GIT_OUTPUT:-git clone returned a non-zero exit code.}
+            stop_attention 'Main Workspace clone failed.' "$clone_message"
+        fi
+
+        inspect_main "$main_path" "$expected_identity" EXISTING_REPOSITORY || true
+        if [ "$INSPECT_DIRTY" -eq 1 ]; then
+            stop_attention 'Main Workspace: DIRTY' "$INSPECT_REASONS"
+        fi
+        if [ "$INSPECT_VALID" -ne 1 ]; then
+            stop_attention 'Cloned Main Workspace verification failed.' "$INSPECT_REASONS"
+        fi
+        main_status=CREATED
     fi
-    if [ "$INSPECT_VALID" -ne 1 ]; then
-        stop_attention 'Cloned Main Workspace verification failed.' "$INSPECT_REASONS"
-    fi
-    main_status=CREATED
 fi
 
 legacy_count=0
@@ -510,9 +598,19 @@ printf '%s\n' 'STATUS: SUCCESS'
 printf 'Repository: %s\n' "$REPOSITORY_IDENTITY"
 printf 'Workspace Root: %s\n' "$root_path"
 printf 'Main Workspace: %s (%s)\n' "$main_path" "$main_status"
+printf 'Remote State: %s\n' "$REMOTE_STATE"
 printf 'Current Branch: %s\n' "$INSPECT_CURRENT_BRANCH"
-printf 'Default Branch: %s\n' "$INSPECT_DEFAULT_BRANCH"
-printf '%s\n' 'Origin: VERIFIED'
+if [ -n "$INSPECT_DEFAULT_BRANCH" ]; then
+    printf 'Default Branch: %s\n' "$INSPECT_DEFAULT_BRANCH"
+else
+    printf '%s\n' 'Default Branch: none'
+fi
+if [ "$REMOTE_STATE" = EMPTY_REPOSITORY ]; then
+    printf '%s\n' 'Origin: CONFIGURED'
+    printf '%s\n' 'Remote main: not created yet'
+else
+    printf '%s\n' 'Origin: VERIFIED'
+fi
 printf '%s\n' 'Working Tree: CLEAN'
 printf 'Base Workspace: %s (%s)\n' "$base_path" "$base_status"
 printf 'Base/status: %s\n' "$status_directory_status"
