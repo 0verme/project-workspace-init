@@ -12,6 +12,10 @@ $ErrorActionPreference = 'Stop'
 
 # This command is bootstrap-only. The Skill must not invoke it for daily
 # Worktree operations after an initialized base has been discovered.
+#
+# Bootstrap deliberately does not create or rewrite the Main Workspace's
+# .gitignore. Project source and generated-artifact policy belongs to the
+# repository's existing conventions and technology-specific setup.
 
 function Stop-NeedsInput {
     param(

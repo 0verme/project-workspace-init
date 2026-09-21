@@ -302,6 +302,32 @@ worktree: <Workspace Root>/worktrees/issue-65-data-delivery
 - Main Repository 与 linked Worktree 必须在同一运行环境和同一文件系统侧；Windows 与 FNOS 如需维护同一 GitHub 项目，应各自 clone，通过 Git remote 同步；
 - 不自动删除或移动已有 branch / Worktree，不 force push，不自动 merge。
 
+## Source Code and Generated Artifacts
+
+核心原则：源代码目录看职责，生成目录看仓库既有约定，不得仅根据目录名一刀切。
+
+### 源代码目录
+
+- 不得仅根据目录名称判断文件是否应该提交。
+- `ui/`、`frontend/`、`web/` 等目录如果包含项目正式源码，应正常纳入 Git 管理；它们不是通用忽略目录。
+- 不得因为 bootstrap 阶段而禁止正常的 UI / frontend 开发。
+
+### Generated Artifacts
+
+- `dist/`、`build/`、`.next/`、`coverage/` 等通常属于生成产物，默认倾向于不提交，但这不是硬性安全边界。
+- 不得机械地将这些目录加入 `.gitignore`。先检查仓库现有 `.gitignore`、`git ls-files` 的跟踪状态、README / CONTRIBUTING / AGENTS 约定、CI/CD / GitHub Pages / Release / npm/package 发布方式，以及项目自身的构建与分发模型。
+- 已跟踪或承担部署、分发、Release 等明确职责的构建产物不得被擅自删除、忽略或停止提交。
+- 新仓库无法确认生成产物策略时，采用保守策略，不替用户做不可逆的结构性决定。
+
+### UI Initialization
+
+- 初始化阶段不要在没有需求的情况下擅自引入 React、Vue、Vite、Next.js 等新的 UI 技术栈。
+- 这不是“禁止 UI 开发”：项目本身是 Web / UI 项目、仓库已有 UI 技术栈、用户明确要求开发 UI，或当前任务涉及 UI 时，都应正常开发。
+
+### Bootstrap 与 `.gitignore`
+
+bootstrap 脚本只创建 Main Workspace 与 Agent Control Plane，不重写已有仓库的 `.gitignore`，也不通用追加 `ui/`、`frontend/`、`web/`、`dist/` 或 `build/`。它不会运行 `git rm -r --cached ...` 来替项目改变跟踪状态。空仓库没有技术栈和发布模型证据时，不自动生成针对生成产物的忽略规则；项目技术栈明确后可以再添加项目匹配的最小 `.gitignore`，但不得误伤正式源码目录。
+
 ## Legacy Worktree 检查
 
 bootstrap 在 Main Workspace 可验证后，会检查共同父目录下的历史平铺目录，并只报告：
@@ -339,7 +365,9 @@ sh tests/test-init-workspace.sh
 - `处理 #65` 自动生成 branch 与 Worktree；
 - 从 `feat/issue-65-data-delivery` 生成 `issue-65-data-delivery` 而非嵌套 `feat/` 目录；
 - 已有 branch、目标目录或同 Issue Worktree 时报告冲突，不创建 `-2` / `-new` / `-copy`；
-- 模板保护、Dirty Main、权限不足和历史平铺 Worktree 只报告不破坏。
+- 模板保护、Dirty Main、权限不足和历史平铺 Worktree 只报告不破坏；
+- UI / frontend / web 源码目录不会因为名称被忽略，已有 `.gitignore` 不被粗暴重写，已跟踪的 `dist/` / `build/` 不被取消跟踪；
+- 空仓库没有技术栈证据时不制造目录名驱动的 artifact ignore 规则。
 
 ## License
 

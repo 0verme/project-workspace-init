@@ -167,6 +167,40 @@ EXISTING_REPOSITORY
 3. Main Workspace 已存在但 dirty、remote 不一致、处于 detached HEAD、权限不足或其他安全条件不满足时，返回 `STATUS: NEEDS_ATTENTION`，不得自行修复；
 4. 空仓库中已经存在的 Main Workspace 也必须是目标仓库、`main` branch；origin 不一致时停止，不能擅自修改。
 
+## Source Code and Generated Artifacts
+
+核心原则：源代码目录看职责，生成目录看仓库既有约定，不得仅根据目录名一刀切。
+
+### Source Code
+
+- 不得仅根据目录名称判断文件是否应该提交。
+- `ui/`、`frontend/`、`web/` 等目录如果包含项目正式源码，应正常纳入 Git 管理。
+- 不得把 `ui/`、`frontend/`、`web/` 作为通用忽略目录。
+- 不得因为 bootstrap 阶段而禁止正常的 UI / frontend 开发。
+
+### Generated Artifacts
+
+- `dist/`、`build/`、`.next/`、`coverage/` 等通常属于生成产物，默认倾向于不提交；这只是默认倾向，不是硬性安全边界。
+- 不得机械地将这些目录加入 `.gitignore`。必须优先检查：
+  1. 仓库现有 `.gitignore`；
+  2. Git 当前是否已经跟踪这些目录（例如 `git ls-files`）；
+  3. README、CONTRIBUTING、AGENTS 等现有约定；
+  4. CI/CD、GitHub Pages、Release、npm/package 发布方式；
+  5. 项目自身的构建与分发模型。
+- 如果仓库已经跟踪相关构建产物，或者它们承担部署、分发、Release 等明确职责，不得擅自删除、忽略或停止提交。
+- 对于新仓库，如果无法确认是否需要提交生成产物，应采用保守策略，不要替用户做不可逆的结构性决定。
+
+### UI Initialization
+
+- 初始化阶段不要在没有需求的情况下擅自引入 React、Vue、Vite、Next.js 等新的 UI 技术栈。
+- 这不是“禁止 UI 开发”。如果项目本身就是 Web / UI 项目、仓库已经存在 UI 技术栈、用户明确要求开发 UI，或当前任务涉及 UI，则应正常进行 UI 开发。
+
+### Bootstrap 与 `.gitignore`
+
+- bootstrap 脚本只负责 Main Workspace 与 Agent Control Plane 的安全初始化，不重写已有仓库的 `.gitignore`。
+- 脚本不得通用追加 `ui/`、`frontend/`、`web/`、`dist/` 或 `build/`，也不得运行 `git rm -r --cached ...` 来替项目改变跟踪状态。
+- 空仓库没有技术栈和发布模型证据时，bootstrap 不擅自生成针对生成产物的忽略规则；后续可在技术栈明确后添加项目匹配的最小 `.gitignore`，但不得包含会误伤正式源码目录的通用规则。
+
 ## 4. 已初始化项目的 Repository 解析
 
 进入日常模式后，按以下优先级解析 Repository：
