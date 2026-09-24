@@ -73,7 +73,7 @@ Workspace Root 必须是现存、可访问的绝对路径。脚本区分三种�
     └── worktrees/
 ```
 
-`AGENTS.md` 和 `STATUS.md` 已存在时保留原文件。STATUS 模板只记录初始化级信息。脚本不执行 `reset`、`clean`、`stash`、自动 commit 或 push。
+`AGENTS.md` 和 `STATUS.md` 已存在时保留原文件。STATUS 模板只记录初始化级信息。Bootstrap 不重写已有 `.gitignore`，也不根据目录名擅自改变源码或构建产物的 Git 跟踪策略。脚本不执行 `reset`、`clean`、`stash`、自动 commit 或 push。
 
 ## 验证
 

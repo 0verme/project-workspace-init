@@ -157,14 +157,14 @@ This skill never maintains task or development state.
   `STATUS.md`; never replace user data.
 - Never repeat a clone, reset, clean, stash, checkout over user data, commit, or push to
   force initialization through.
-- Do not rewrite an existing `.gitignore`, alter the repository's file-tracking policy,
-  generate a technology stack, or overwrite source code.
-- If a destination contains conflicting or unsafe data, Main Workspace verification
-  fails, permissions are insufficient, Git is unavailable, remote state is uncertain,
-  or a script fails, stop with `STATUS: NEEDS_ATTENTION` and explain the reason.
-- Initialization must be safe to retry. A complete target returns `ALREADY_INITIALIZED`
-  without writes; incomplete targets may only receive missing bootstrap directories and
-  templates after all safety checks pass.
+- Bootstrap never creates or rewrites the Main Workspace's `.gitignore` or infers
+  tracking from names: `ui/`, `frontend/`, and `web/` may contain source, while `dist/`
+  or `build/` may be intentionally tracked. Follow repository conventions; do not generate
+  a technology stack or overwrite source code.
+- If data conflicts or a verification, permission, Git, remote-state, or script check fails,
+  stop with `STATUS: NEEDS_ATTENTION` and explain why.
+- Retries are safe: complete targets return `ALREADY_INITIALIZED` without writes;
+  incomplete targets receive only missing bootstrap directories or templates after checks.
 
 ## 9. Result
 

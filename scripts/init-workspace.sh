@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 # Initialize a Git Main Workspace and its non-Git Agent Control Plane.
 # The caller must provide both --repository and --root explicitly.
+# Bootstrap does not create or rewrite the Main Workspace's .gitignore;
+# source and generated-artifact policy stays repository-specific.
 
 set -eu
 

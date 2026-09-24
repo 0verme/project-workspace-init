@@ -31,4 +31,6 @@ E:\workspace-root\
 
 空远程仓库会在本地初始化 `main` 并设置 `origin`，不创建 commit、README 或 push。完整结构再次初始化时返回 `ALREADY_INITIALIZED`，报告 Repository、Main Workspace 和 Control Plane 后退出。
 
+Bootstrap 不重写已有 `.gitignore`，也不根据目录名擅自改变源码或构建产物的 Git 跟踪策略。
+
 Root 缺失、无效或不可访问时停止；不会推测路径。已有模板不会被覆盖。

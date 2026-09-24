@@ -8,7 +8,7 @@ This file is created once by `project-workspace-init`. Add project-specific rule
 - `<repo>_base/worktrees/` is the location for task worktrees.
 - Do not do ordinary feature development directly on the Main Workspace.
 - Never delete, reset, clean, or overwrite user changes in another worktree.
-- Follow the repository's own `AGENTS.md`, `CONTRIBUTING` guide, and task instructions for subsequent project work.
+- Follow the repository's own `AGENTS.md`, `CONTRIBUTING`, `.gitignore`, tracked-artifact conventions, and task instructions for subsequent project work.
 
 ## Project-specific Rules
 

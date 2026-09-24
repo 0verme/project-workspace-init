@@ -137,6 +137,16 @@ assert_contains "$test_output" 'STATUS: SUCCESS'
 assert_contains "$test_output" 'Remote State: EMPTY_REPOSITORY'
 assert_not_contains "$test_output" 'NEEDS_ATTENTION'
 assert_successful_empty_workspace "$case_root"
+# An empty repository has no technology or release evidence, so bootstrap must
+# not manufacture directory-based ignore rules. If a future safe default file
+# is supplied, it must still avoid source and generated-artifact assumptions.
+if [ -f "$case_root/empty/.gitignore" ]; then
+    for unsafe_rule in 'ui/' 'frontend/' 'web/' 'dist/' 'build/'; do
+        if grep -F -x -- "$unsafe_rule" "$case_root/empty/.gitignore" >/dev/null; then
+            fail "empty bootstrap added an unsafe default ignore rule: $unsafe_rule"
+        fi
+    done
+fi
 
 # 5. A complete rerun is terminal and performs no filesystem or Git writes.
 printf 'preserve me\n' > "$case_root/empty_base/AGENTS.md"
@@ -204,4 +214,38 @@ assert_contains "$test_output" 'Default Branch: develop'
 [ "$($real_git -C "$case_root/develop" symbolic-ref --quiet --short HEAD)" = 'develop' ] ||
     fail 'non-main default branch was forced to main'
 
-printf '%s\n' 'PASS: init-workspace bootstrap scenarios (9 groups)'
+# 10. Existing source directories, tracked artifacts, and .gitignore policy are
+# preserved instead of being inferred from directory names.
+new_case artifact-policy
+policy_main="$case_root/main"
+mkdir "$policy_main"
+$real_git init -q -b main "$policy_main"
+$real_git -C "$policy_main" remote add origin https://github.com/test/main.git
+printf '%s\n' 'main' > "$policy_main/.git/fake-default-branch"
+printf '%s\n' 'node_modules/' > "$policy_main/.gitignore"
+mkdir -p "$policy_main/ui/src" "$policy_main/frontend/src" "$policy_main/web" "$policy_main/dist" "$policy_main/build"
+printf '%s\n' 'ui source' > "$policy_main/ui/src/app.ts"
+printf '%s\n' 'frontend source' > "$policy_main/frontend/src/app.ts"
+printf '%s\n' 'web source' > "$policy_main/web/index.html"
+printf '%s\n' 'plugin release' > "$policy_main/dist/plugin.js"
+printf '%s\n' 'release metadata' > "$policy_main/build/release.txt"
+$real_git -C "$policy_main" config user.name 'Test User'
+$real_git -C "$policy_main" config user.email 'test@example.invalid'
+$real_git -C "$policy_main" add .
+$real_git -C "$policy_main" commit -q -m 'seed source and release artifacts'
+policy_gitignore_before=$(cat "$policy_main/.gitignore")
+run_bootstrap --repository test/main --root "$case_root"
+[ "$test_exit" -eq 0 ] || fail "artifact policy bootstrap failed:\n$test_output"
+[ "$(cat "$policy_main/.gitignore")" = "$policy_gitignore_before" ] ||
+    fail 'existing .gitignore was rewritten'
+for tracked_path in ui/src/app.ts frontend/src/app.ts web/index.html dist/plugin.js build/release.txt; do
+    $real_git -C "$policy_main" ls-files --error-unmatch -- "$tracked_path" >/dev/null 2>&1 ||
+        fail "tracked path was removed: $tracked_path"
+done
+for unsafe_rule in 'ui/' 'frontend/' 'web/' 'dist/' 'build/'; do
+    if grep -F -x -- "$unsafe_rule" "$policy_main/.gitignore" >/dev/null; then
+        fail "bootstrap added an unsafe ignore rule: $unsafe_rule"
+    fi
+done
+
+printf '%s\n' 'PASS: init-workspace bootstrap scenarios (10 groups)'

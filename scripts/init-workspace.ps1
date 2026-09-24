@@ -10,6 +10,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Bootstrap does not create or rewrite the Main Workspace's .gitignore;
+# source and generated-artifact policy stays repository-specific.
+
 function Stop-NeedsInput {
     param(
         [Parameter(Mandatory = $false)]
