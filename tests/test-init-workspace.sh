@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-export REAL_GIT=$real_git
+export REAL_GIT="$real_git"
 export FAKE_GIT_LOG="$fixture_dir/git.log"
 export PATH="$fixture_dir:$PATH"
 cp "$fake_git" "$fixture_dir/git"
@@ -43,6 +43,33 @@ assert_not_contains() {
         fail "expected output not to contain: $needle\n$haystack"
     fi
 }
+
+assert_skill_omits() {
+    forbidden=$1
+    if grep -F -- "$forbidden" "$script_dir/SKILL.md" >/dev/null; then
+        fail "SKILL.md still contains removed daily responsibility: $forbidden"
+    fi
+}
+
+# Bootstrap-only regression guard for the Skill contract and template scope.
+skill_lines=$(wc -l < "$script_dir/SKILL.md" | tr -d ' ')
+[ "$skill_lines" -le 180 ] || fail "SKILL.md is longer than 180 lines: $skill_lines"
+for forbidden in \
+    '日常模式' \
+    '日常创建 / 复用 Worktree' \
+    'Resolved Workspace Context' \
+    'REUSED' \
+    'STALE_WORKTREE_METADATA' \
+    'SAFE_TEMP_RESIDUE' \
+    'REAL_CONFLICT' \
+    'CASE A' 'CASE B' 'CASE C' 'CASE D' 'CASE E' 'CASE F'; do
+    assert_skill_omits "$forbidden"
+done
+assert_not_contains "$(cat "$script_dir/SKILL.md")" 'Issue #'
+assert_not_contains "$(cat "$script_dir/SKILL.md")" 'feat/issue-'
+assert_not_contains "$(cat "$script_dir/templates/STATUS.md")" 'Active Tasks'
+assert_not_contains "$(cat "$script_dir/templates/STATUS.md")" 'Merge Queue'
+assert_not_contains "$(cat "$script_dir/templates/AGENTS.md")" 'CASE A'
 
 run_bootstrap() {
     set +e
@@ -111,16 +138,27 @@ assert_contains "$test_output" 'Remote State: EMPTY_REPOSITORY'
 assert_not_contains "$test_output" 'NEEDS_ATTENTION'
 assert_successful_empty_workspace "$case_root"
 
-# 5. Rerunning a correct empty bootstrap is safe and preserves existing files.
+# 5. A complete rerun is terminal and performs no filesystem or Git writes.
 printf 'preserve me\n' > "$case_root/empty_base/AGENTS.md"
+before_paths=$(find "$case_root" -print | sort)
+before_files=$(find "$case_root" -type f -exec cksum {} \; | sort)
+: > "$FAKE_GIT_LOG"
 run_bootstrap --repository test/empty --root "$case_root"
-[ "$test_exit" -eq 0 ] || fail "empty repository rerun failed:\n$test_output"
-assert_contains "$test_output" 'Main Workspace: '
-assert_contains "$test_output" '(EXISTS)'
-assert_contains "$test_output" 'Base Workspace: '
-assert_contains "$test_output" '(EXISTS)'
+[ "$test_exit" -eq 0 ] || fail "initialized rerun failed:\n$test_output"
+assert_contains "$test_output" 'STATUS: ALREADY_INITIALIZED'
+assert_contains "$test_output" 'Repository: test/empty'
+assert_contains "$test_output" "Main Workspace: $case_root/empty"
+assert_contains "$test_output" "Control Plane: $case_root/empty_base"
+assert_not_contains "$test_output" 'STATUS: SUCCESS'
+assert_not_contains "$test_output" 'Issue'
+assert_not_contains "$test_output" 'Branch'
+assert_not_contains "$test_output" 'worktree'
+[ "$(find "$case_root" -print | sort)" = "$before_paths" ] || fail 'initialized rerun changed the filesystem paths'
+[ "$(find "$case_root" -type f -exec cksum {} \; | sort)" = "$before_files" ] || fail 'initialized rerun changed file contents'
 [ "$(cat "$case_root/empty_base/AGENTS.md")" = 'preserve me' ] || fail 'rerun overwrote AGENTS.md'
-assert_successful_empty_workspace "$case_root"
+if grep -E '(^| )(ls-remote|clone|init|remote add|worktree|checkout|reset|clean|stash|commit|push)( |$)' "$FAKE_GIT_LOG" >/dev/null; then
+    fail "initialized rerun performed remote, mutation, or worktree operations:\n$(cat "$FAKE_GIT_LOG")"
+fi
 
 # 6. An existing non-Git target is a conflict, not an overwrite opportunity.
 new_case local-non-git
