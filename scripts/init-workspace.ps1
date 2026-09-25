@@ -10,12 +10,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# This command is bootstrap-only. The Skill must not invoke it for daily
-# Worktree operations after an initialized base has been discovered.
-#
-# Bootstrap deliberately does not create or rewrite the Main Workspace's
-# .gitignore. Project source and generated-artifact policy belongs to the
-# repository's existing conventions and technology-specific setup.
+# Bootstrap does not create or rewrite the Main Workspace's .gitignore;
+# source and generated-artifact policy stays repository-specific.
 
 function Stop-NeedsInput {
     param(
@@ -305,7 +301,59 @@ function Get-ComparablePath {
     }
 }
 
-function Inspect-MainWorkspace {
+function Test-AlreadyInitialized {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$MainPath,
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedIdentity
+    )
+
+    if (-not (Test-Path -LiteralPath $MainPath -PathType Container) -or
+        -not (Test-Path -LiteralPath $BasePath -PathType Container)) {
+        return $false
+    }
+
+    foreach ($fileName in @('AGENTS.md', 'STATUS.md')) {
+        $filePath = Join-Path $BasePath $fileName
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+            return $false
+        }
+        $fileItem = Get-Item -LiteralPath $filePath -Force
+        if (($fileItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return $false
+        }
+    }
+
+    foreach ($directoryName in @('status', 'integration', 'worktrees')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $BasePath $directoryName) -PathType Container)) {
+            return $false
+        }
+    }
+
+    $baseGitResult = Invoke-GitCommand -WorkingDirectory $BasePath -Arguments @('rev-parse', '--show-toplevel')
+    if ($baseGitResult.ExitCode -eq 0) {
+        return $false
+    }
+
+    $topResult = Invoke-GitCommand -WorkingDirectory $MainPath -Arguments @('rev-parse', '--show-toplevel')
+    if ($topResult.ExitCode -ne 0 -or
+        (Get-ComparablePath -Value $topResult.Output.Trim()) -ne (Get-ComparablePath -Value $MainPath)) {
+        return $false
+    }
+
+    $originResult = Invoke-GitCommand -WorkingDirectory $MainPath -Arguments @('config', '--get', 'remote.origin.url')
+    if ($originResult.ExitCode -ne 0) {
+        return $false
+    }
+    $originIdentity = Get-RemoteIdentity -Remote $originResult.Output.Trim()
+    return -not [string]::IsNullOrWhiteSpace($originIdentity) -and
+        $originIdentity.ToLowerInvariant() -eq $ExpectedIdentity.ToLowerInvariant()
+}
+
+function Get-MainWorkspaceInspection {
     param(
         [Parameter(Mandatory = $true)]
         [string]$MainPath,
@@ -438,6 +486,15 @@ if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) {
 
 $mainPath = Join-Path -Path $rootPath -ChildPath $repositorySpec.Name
 $basePath = Join-Path -Path $rootPath -ChildPath ("{0}_base" -f $repositorySpec.Name)
+
+if (Test-AlreadyInitialized -MainPath $mainPath -BasePath $basePath -ExpectedIdentity $repositorySpec.Identity) {
+    Write-Output 'STATUS: ALREADY_INITIALIZED'
+    Write-Output "Repository: $($repositorySpec.Identity)"
+    Write-Output "Main Workspace: $mainPath"
+    Write-Output "Control Plane: $basePath"
+    exit 0
+}
+
 $templateRoot = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..\templates'))
 $agentsTemplate = Join-Path -Path $templateRoot -ChildPath 'AGENTS.md'
 $statusTemplate = Join-Path -Path $templateRoot -ChildPath 'STATUS.md'
@@ -505,7 +562,7 @@ if ($remoteStateInfo.State -eq 'EXISTING_REPOSITORY' -and
 $mainStatus = $null
 $inspection = $null
 if ($mainExists) {
-    $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState $remoteStateInfo.State
+    $inspection = Get-MainWorkspaceInspection -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState $remoteStateInfo.State
     if ($inspection.Dirty) {
         $remainingReasons = @($inspection.Reasons | Where-Object { $_ -ne 'Main Workspace: DIRTY' })
         Stop-Attention -Headline 'Main Workspace: DIRTY' -Reasons $remainingReasons
@@ -535,7 +592,7 @@ else {
             Stop-Attention -Headline 'Empty Repository Bootstrap failed.' -Reasons @($remoteMessage)
         }
 
-        $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState 'EMPTY_REPOSITORY'
+        $inspection = Get-MainWorkspaceInspection -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState 'EMPTY_REPOSITORY'
         if ($inspection.Dirty) {
             $remainingReasons = @($inspection.Reasons | Where-Object { $_ -ne 'Main Workspace: DIRTY' })
             Stop-Attention -Headline 'Main Workspace: DIRTY' -Reasons $remainingReasons
@@ -561,7 +618,7 @@ else {
             Stop-Attention -Headline 'Main Workspace clone failed.' -Reasons @($cloneMessage)
         }
 
-        $inspection = Inspect-MainWorkspace -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState 'EXISTING_REPOSITORY'
+        $inspection = Get-MainWorkspaceInspection -MainPath $mainPath -ExpectedIdentity $repositorySpec.Identity -RemoteState 'EXISTING_REPOSITORY'
         if ($inspection.Dirty) {
             $remainingReasons = @($inspection.Reasons | Where-Object { $_ -ne 'Main Workspace: DIRTY' })
             Stop-Attention -Headline 'Main Workspace: DIRTY' -Reasons $remainingReasons
@@ -571,24 +628,6 @@ else {
         }
         $mainStatus = 'CREATED'
     }
-}
-
-$legacyCandidates = New-Object System.Collections.Generic.List[string]
-$warnings = New-Object System.Collections.Generic.List[string]
-try {
-    foreach ($child in @(Get-ChildItem -LiteralPath $rootPath -Directory -Force)) {
-        if ($child.Name.StartsWith(($repositorySpec.Name + '-'), [System.StringComparison]::OrdinalIgnoreCase)) {
-            $legacyCandidates.Add($child.FullName)
-        }
-    }
-}
-catch {
-    $warnings.Add("Unable to inspect flat legacy Worktree candidates: $($_.Exception.Message)")
-}
-
-$worktreeListResult = Invoke-GitCommand -WorkingDirectory $mainPath -Arguments @('worktree', 'list')
-if ($worktreeListResult.ExitCode -ne 0) {
-    $warnings.Add("git worktree list failed: $($worktreeListResult.Output.Trim())")
 }
 
 $baseStatus = $null
@@ -654,14 +693,4 @@ foreach ($item in $directoryStatuses) {
 }
 foreach ($item in $templateStatuses) {
     Write-Output "Base/$($item.Name): $($item.State)"
-}
-
-if ($legacyCandidates.Count -gt 0) {
-    Write-Output 'LEGACY WORKTREES DETECTED'
-    foreach ($candidate in $legacyCandidates) {
-        Write-Output "- $candidate"
-    }
-}
-foreach ($warning in $warnings) {
-    Write-Output "WARNING: $warning"
 }

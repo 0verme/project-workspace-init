@@ -1,10 +1,6 @@
 # Windows 示例
 
-以下示例使用占位路径。`E:\workspace-root` 只是首次 bootstrap 的显式输入示例，不是 Skill 默认路径。
-
-## 首次 bootstrap
-
-在 PowerShell 中，从 Skill 包目录运行：
+以下命令仅用于首次 bootstrap。`E:\workspace-root` 必须由用户明确提供，且为已存在的绝对路径。
 
 ```powershell
 .\scripts\init-workspace.ps1 `
@@ -12,7 +8,7 @@
   -Root E:\workspace-root
 ```
 
-也可以使用明确的 GitHub short form：
+也支持明确的 `owner/repo`：
 
 ```powershell
 .\scripts\init-workspace.ps1 `
@@ -20,83 +16,21 @@
   -Root E:\workspace-root
 ```
 
-预期结构：
+成功后目录为：
 
 ```text
 E:\workspace-root\
-├─ data-warehouse-visualized\
-└─ data-warehouse-visualized_base\
-   ├─ AGENTS.md
-   ├─ STATUS.md
-   ├─ status\
-   ├─ integration\
-   └─ worktrees\
+├── data-warehouse-visualized\
+└── data-warehouse-visualized_base\
+    ├── AGENTS.md
+    ├── STATUS.md
+    ├── status\
+    ├── integration\
+    └── worktrees\
 ```
 
-bootstrap 完成后，`E:\workspace-root\data-warehouse-visualized_base\` 会被识别为日常操作的 Workspace Root。
+空远程仓库会在本地初始化 `main` 并设置 `origin`，不创建 commit、README 或 push。完整结构再次初始化时返回 `ALREADY_INITIALIZED`，报告 Repository、Main Workspace 和 Control Plane 后退出。
 
-如果 `Repository` 已在 GitHub 创建但仍然完全为空（没有 branch、default branch 或 commit），这也是合法的 bootstrap 场景。脚本会走 `Empty Repository Bootstrap`：
+Bootstrap 不重写已有 `.gitignore`，也不根据目录名擅自改变源码或构建产物的 Git 跟踪策略。
 
-```text
-Remote State: EMPTY_REPOSITORY
-Main Workspace: E:\workspace-root\data-warehouse-visualized\
-Local branch: main
-Remote origin: configured
-Remote main: not created yet
-```
-
-此路径使用本地 `git init -b main`，只配置 `origin`，不会生成 README、自动 commit 或 push；同时仍创建 `data-warehouse-visualized_base\` 及其控制面目录。
-
-## 初始化完成后的日常操作
-
-如果当前目录或其父目录能找到：
-
-```text
-AGENTS.md
-STATUS.md
-worktrees\
-```
-
-则不再要求 `-Root`，也不重新调用 bootstrap。比如用户只说：
-
-```text
-处理 #65
-```
-
-可以自动得到：
-
-```text
-branch:   feat/issue-65
-worktree: E:\workspace-root\data-warehouse-visualized_base\worktrees\issue-65
-```
-
-如果用户给出：
-
-```text
-branch: feat/issue-65-data-delivery
-```
-
-目录应为：
-
-```text
-E:\workspace-root\data-warehouse-visualized_base\worktrees\issue-65-data-delivery
-```
-
-而不是保留 `feat/` 作为目录层级。
-
-## 约束
-
-- 只有首次 bootstrap 才要求 `-Repository` 和 `-Root` 都显式提供；
-- `-Root .`、`-Root ..`、`-Root ~\workspace` 或其他相对路径会被拒绝；
-- 日常操作不要求用户提供 Worktree 绝对路径，默认路径始终位于已发现 base 的 `worktrees\` 下；
-- 创建前检查 branch、已有 Worktree、目标目录和同一 Issue 的活跃 Worktree；
-- 真实冲突时请求决策，不自动创建 `issue-65-2`、`issue-65-new` 或 `issue-65-copy`；
-- 已有 Main Workspace dirty 时只报告 `STATUS: NEEDS_ATTENTION`，不会 reset、stash、clean 或 checkout 覆盖；
-- 已有 `AGENTS.md` 或 `STATUS.md` 时输出 `KEEP`，不会覆盖。
-
-## Source Code 与 Generated Artifacts
-
-- 源代码目录看职责，不看目录名：包含正式源码的 `ui/`、`frontend/`、`web/` 应正常纳入 Git，不作为通用忽略目录；初始化阶段也不禁止正常 UI / frontend 开发。
-- `dist/`、`build/`、`.next/`、`coverage/` 通常倾向于不提交，但必须先检查现有 `.gitignore`、`git ls-files`、项目文档、CI/CD、GitHub Pages / Release / npm 发布方式和构建分发模型。
-- bootstrap 不重写已有 `.gitignore`，不通用追加上述目录，也不通过 `git rm -r --cached ...` 改变跟踪状态。空仓库没有技术栈证据时，不自动决定生成产物策略。
-- 没有明确 UI 需求时不擅自引入 React、Vue、Vite、Next.js；这不是禁止已有项目或用户需求中的 UI 开发。
+Root 缺失、无效或不可访问时停止；不会推测路径。已有模板不会被覆盖。

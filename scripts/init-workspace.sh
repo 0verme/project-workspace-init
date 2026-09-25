@@ -1,15 +1,10 @@
 #!/usr/bin/env sh
 # Initialize a Git Main Workspace and its non-Git Agent Control Plane.
 # The caller must provide both --repository and --root explicitly.
+# Bootstrap does not create or rewrite the Main Workspace's .gitignore;
+# source and generated-artifact policy stays repository-specific.
 
 set -eu
-
-# This command is bootstrap-only. The Skill must not invoke it for daily
-# Worktree operations after an initialized base has been discovered.
-#
-# Bootstrap deliberately does not create or rewrite the Main Workspace's
-# .gitignore. Project source and generated-artifact policy belongs to the
-# repository's existing conventions and technology-specific setup.
 
 stop_needs_input() {
     reason=${1-}
@@ -199,18 +194,9 @@ fi
 if [ ! -d "$root" ]; then
     stop_attention 'Workspace Root is unavailable.' "Root does not exist as a directory: $root"
 fi
-if [ ! -r "$root" ] || [ ! -x "$root" ] || [ ! -w "$root" ]; then
+if [ ! -r "$root" ] || [ ! -x "$root" ]; then
     current_user=$(id -un 2>/dev/null || printf '%s' 'unknown')
-    stop_attention 'Workspace Root permissions are insufficient.' "User: $current_user; Target: $root; required read, enter, and write permissions are not all available."
-fi
-
-script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
-template_root=$(CDPATH='' cd "$script_dir/../templates" 2>/dev/null && pwd -P) || \
-    stop_attention 'Skill templates are unavailable.' "Expected templates under: $script_dir/../templates"
-agents_template="$template_root/AGENTS.md"
-status_template="$template_root/STATUS.md"
-if [ ! -f "$agents_template" ] || [ ! -f "$status_template" ]; then
-    stop_attention 'Skill templates are unavailable.' "Expected templates under: $template_root"
+    stop_attention 'Workspace Root permissions are insufficient.' "User: $current_user; Target: $root; required read and enter permissions are not available."
 fi
 
 root_path=$(CDPATH='' cd "$root" && pwd -P)
@@ -240,6 +226,49 @@ git_capture_global() {
     GIT_EXIT=$?
     set -e
 }
+
+is_already_initialized() {
+    [ -d "$main_path" ] && [ -d "$base_path" ] || return 1
+    [ -f "$base_path/AGENTS.md" ] && [ ! -L "$base_path/AGENTS.md" ] || return 1
+    [ -f "$base_path/STATUS.md" ] && [ ! -L "$base_path/STATUS.md" ] || return 1
+    [ -d "$base_path/status" ] && [ -d "$base_path/integration" ] && [ -d "$base_path/worktrees" ] || return 1
+
+    git_capture "$base_path" rev-parse --show-toplevel
+    [ "$GIT_EXIT" -ne 0 ] || return 1
+    git_capture "$main_path" rev-parse --show-toplevel
+    [ "$GIT_EXIT" -eq 0 ] || return 1
+
+    main_real=$(CDPATH='' cd "$main_path" 2>/dev/null && pwd -P) || return 1
+    top_real=$(CDPATH='' cd "$GIT_OUTPUT" 2>/dev/null && pwd -P) || return 1
+    [ "$main_real" = "$top_real" ] || return 1
+
+    git_capture "$main_path" config --get remote.origin.url
+    [ "$GIT_EXIT" -eq 0 ] || return 1
+    parse_remote_identity "$GIT_OUTPUT" || return 1
+    [ "$(normalize_identity "$REMOTE_IDENTITY")" = "$expected_identity" ]
+}
+
+if is_already_initialized; then
+    printf '%s\n' 'STATUS: ALREADY_INITIALIZED'
+    printf 'Repository: %s\n' "$REPOSITORY_IDENTITY"
+    printf 'Main Workspace: %s\n' "$main_path"
+    printf 'Control Plane: %s\n' "$base_path"
+    exit 0
+fi
+
+if [ ! -w "$root_path" ]; then
+    current_user=$(id -un 2>/dev/null || printf '%s' 'unknown')
+    stop_attention 'Workspace Root permissions are insufficient.' "User: $current_user; Target: $root_path; write permission is not available."
+fi
+
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
+template_root=$(CDPATH='' cd "$script_dir/../templates" 2>/dev/null && pwd -P) || \
+    stop_attention 'Skill templates are unavailable.' "Expected templates under: $script_dir/../templates"
+agents_template="$template_root/AGENTS.md"
+status_template="$template_root/STATUS.md"
+if [ ! -f "$agents_template" ] || [ ! -f "$status_template" ]; then
+    stop_attention 'Skill templates are unavailable.' "Expected templates under: $template_root"
+fi
 
 DEFAULT_BRANCH=''
 DEFAULT_ERROR=''
@@ -535,19 +564,6 @@ else
     fi
 fi
 
-legacy_count=0
-for candidate in "$root_path"/"$REPOSITORY_NAME"-*; do
-    if [ -d "$candidate" ]; then
-        legacy_count=$((legacy_count + 1))
-    fi
-done
-
-worktree_warning=''
-git_capture "$main_path" worktree list
-if [ "$GIT_EXIT" -ne 0 ]; then
-    worktree_warning="git worktree list failed: ${GIT_OUTPUT:-git returned a non-zero exit code.}"
-fi
-
 base_status=''
 status_directory_status=''
 integration_directory_status=''
@@ -622,16 +638,3 @@ printf 'Base/integration: %s\n' "$integration_directory_status"
 printf 'Base/worktrees: %s\n' "$worktrees_directory_status"
 printf 'Base/AGENTS.md: %s\n' "$agents_status"
 printf 'Base/STATUS.md: %s\n' "$status_file_status"
-
-if [ "$legacy_count" -gt 0 ]; then
-    printf '%s\n' 'LEGACY WORKTREES DETECTED'
-    for candidate in "$root_path"/"$REPOSITORY_NAME"-*; do
-        if [ -d "$candidate" ]; then
-            printf '%s\n' "- $candidate"
-        fi
-    done
-fi
-
-if [ -n "$worktree_warning" ]; then
-    printf 'WARNING: %s\n' "$worktree_warning"
-fi
